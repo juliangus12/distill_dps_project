@@ -1,20 +1,23 @@
-import gymnasium as gym
+import gym
 from gymnasium import spaces
 import numpy as np
+from LakeProblem import *
+from lake_expert import *
 
 class LakeEnv(gym.Env):
     """Custom Lake Environment that follows gym.Env"""
-    metadata = {'render_modes': ['human']}
+    metadata = {'render_modes': ['None']}
 
-    def __init__(self, n_years=100, q=2, b=0.42, alpha=0.4, delta=0.98, inertia_threshold=-0.02, reliability_threshold=0.85):
+    def __init__(self, n_years=nYears, q=q, b=b, alpha=alpha, delta=delta,
+                 inertia_threshold=-inertia_threshold, reliability_threshold=reliability_threshold):
         super(LakeEnv, self).__init__()
 
         # Define action and observation space
-        # We assume that the action space is the pollution control action Y between 0.01 and 0.1
-        self.action_space = spaces.Box(low=np.array([0.01]), high=np.array([0.1]), dtype=np.float32)
-        
-        # The observation space is the lake phosphorus concentration (state) between 0 and 2
-        self.observation_space = spaces.Box(low=np.array([0]), high=np.array([2]), dtype=np.float32)
+        self.action_space = spaces.Box(low=np.array([0.01]), high=np.array([0.1]), shape=(1,), dtype=np.float32)
+        self.observation_space = spaces.Box(low=0.0, high=2.0, shape=(1,), dtype=np.float32)
+
+        # Initialize the DPS expert policy
+        self.expert_policy = DPSExpertPolicy(C, R, W, self.observation_space, self.action_space)
 
         # Initialize environment parameters
         self.n_years = n_years
@@ -26,41 +29,40 @@ class LakeEnv(gym.Env):
         self.reliability_threshold = reliability_threshold
         self.lake_state = 0.0  # Initial phosphorus concentration
         self.year = 0
-        self.seed_value = None  # Keep track of the seed
 
-    def step(self, action):
-        """Run one timestep of the environment's dynamics."""
-        Y = action[0]  # Pollution control action
-        natural_inflow = np.random.uniform(0, 0.05)  # Example natural phosphorus inflow (replace with real flow data)
-        
-        # Update lake phosphorus concentration
-        self.lake_state = self.lake_state * (1 - self.b) + (self.lake_state ** self.q) / (1 + self.lake_state ** self.q) + Y + natural_inflow
+    def step(self, learner_action):
+        # Clip the learner's action and ensure it's a (1, 1) shaped array
+        learner_action = np.clip(learner_action, 0.01, 0.1).reshape(1, 1)
 
-        # Reward is based on economic benefit
-        reward = self.alpha * Y * (self.delta ** self.year)
+        # Calculate lake dynamics
+        P_recycling = ((self.lake_state ** self.q) / (1 + self.lake_state ** self.q))
+        natural_inflow = np.random.lognormal(mean=mu, sigma=sigma)
+        next_lake_state = self.lake_state * (1 - self.b) + P_recycling + learner_action + natural_inflow
+        next_lake_state = np.clip(next_lake_state, self.observation_space.low[0], self.observation_space.high[0])
 
-        # Check if the lake's state has gone above a critical threshold
-        done = self.year >= self.n_years
+        # Calculate reward based on imitation accuracy
+        expert_action = self.expert_policy.predict(np.array([self.lake_state], dtype=np.float32))[0]  # (1, 1)
+        reward = float(-abs(learner_action - expert_action))
 
-        # Increment year counter
+        # Update the lake state
+        self.lake_state = next_lake_state
+
+        # Check if the environment should terminate
         self.year += 1
+        terminated = self.year >= self.n_years
 
-        # Return observation (lake state), reward, done flag, and additional info
-        return np.array([self.lake_state]), reward, done, {}
+        # Return 1D observation and 1D reward (scalar reward)
+        obs = np.array([self.lake_state], dtype=np.float32)
+        return obs, reward, terminated, False, {}
 
     def reset(self, seed=None, options=None):
         """Reset the environment to an initial state."""
-        # Set the seed for reproducibility
-        self.seed_value = seed
-        if seed is not None:
-            np.random.seed(seed)
+        super().reset(seed=seed)
 
         # Reset environment variables
-        self.lake_state = np.random.uniform(0, 1)  # Reset lake phosphorus concentration
+        self.lake_state = 0  # Initial lake phosphorus concentration
         self.year = 0
-        
-        return np.array([self.lake_state]), {}  # Return observation and info
 
-    def render(self, mode='human', close=False):
-        """Render the environment (optional)."""
-        print(f"Year: {self.year}, Lake Phosphorus: {self.lake_state}")
+        # Return 1D observation
+        obs = np.array([self.lake_state], dtype=np.float32)
+        return obs, {}
