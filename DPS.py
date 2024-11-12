@@ -1,25 +1,27 @@
+import os
+import pickle
 import numpy as np
+from scipy.optimize import bisect
 from pymoo.algorithms.moo.nsga2 import NSGA2
 from pymoo.optimize import minimize
 from pymoo.indicators.hv import HV  # Hypervolume indicator
+from pymoo.operators.sampling.rnd import FloatRandomSampling    
+from pymoo.operators.crossover.sbx import SBX  # Simulated Binary Crossover
+from pymoo.operators.mutation.pm import PM  # Polynomial Mutation
 from pymoo.termination import get_termination
-from pymoo.operators.sampling.rnd import FloatRandomSampling  # Add this
-import pickle
 from LakeProblem import LakeProblem  # Import your custom lake problem
 
-# NSGA-II algorithm setup
-algorithm = NSGA2(  
-    pop_size=100, 
-    sampling=FloatRandomSampling(),  # Use pymoo's random sampling
-    crossover='real_sbx', 
-    mutation='real_pm', 
+# -------------------------- NSGA-II Optimization -------------------------- #
+
+algorithm = NSGA2(
+    pop_size=100,
+    sampling=FloatRandomSampling(),
+    crossover=SBX(prob=0.9, eta=15),  # Corrected to use SBX instance
+    mutation=PM(eta=20),  # Corrected to use PM instance
     eliminate_duplicates=True
 )
 
-# Number of generations after which NSGA-II terminates 
-termination = get_termination("n_gen", 1)
-
-# Define the LakeProblem class for the optimization problem
+termination = get_termination("n_gen", 100)
 problem = LakeProblem()
 
 # Perform the optimization
