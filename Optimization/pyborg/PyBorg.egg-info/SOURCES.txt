@@ -1,0 +1,8 @@
+README.md
+borg.py
+pyproject.toml
+PyBorg.egg-info/PKG-INFO
+PyBorg.egg-info/SOURCES.txt
+PyBorg.egg-info/dependency_links.txt
+PyBorg.egg-info/requires.txt
+PyBorg.egg-info/top_level.txt

@@ -1,0 +1,6 @@
+platypus-opt
+matplotlib
+
+[test]
+pytest
+flake8
