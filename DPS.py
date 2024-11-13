@@ -1,43 +1,32 @@
-import os
-import pickle
-import numpy as np
-from scipy.optimize import bisect
-from pymoo.algorithms.moo.nsga2 import NSGA2
-from pymoo.optimize import minimize
-from pymoo.indicators.hv import HV  # Hypervolume indicator
-from pymoo.operators.sampling.rnd import FloatRandomSampling    
-from pymoo.operators.crossover.sbx import SBX  # Simulated Binary Crossover
-from pymoo.operators.mutation.pm import PM  # Polynomial Mutation
-from pymoo.termination import get_termination
-from LakeProblem import LakeProblem  # Import your custom lake problem
+import matplotlib.pyplot as plt
+from rhodium import *
+from lake_model_utils import *
 
-# -------------------------- NSGA-II Optimization -------------------------- #
+# Retrieve constants and model parameters
+benefit_scale, discount_rate, phosphorus_loss_rate, phosphorus_recycling_rate, inflow_mean, inflow_variance = get_simulation_constants()
+num_years, num_samples, inertia_threshold, reliability_threshold, num_rbfs, num_vars = get_model_parameters()
 
-algorithm = NSGA2(
-    pop_size=100,
-    sampling=FloatRandomSampling(),
-    crossover=SBX(prob=0.9, eta=15),  # Corrected to use SBX instance
-    mutation=PM(eta=20),  # Corrected to use PM instance
-    eliminate_duplicates=True
-)
+# Set up the Rhodium model using lake_problem as the main function
+model = Model(lake_model)
 
-termination = get_termination("n_gen", 100)
-problem = LakeProblem()
+model.parameters = [
+    Parameter("policy"), Parameter("loss_rate"), Parameter("recycle_rate"),
+    Parameter("mean"), Parameter("variance"), Parameter("discount")
+]
 
-# Perform the optimization
-res = minimize(problem, algorithm, termination, seed=1, save_history=True, verbose=True)
+model.responses = [
+    Response("max_phosphorus", Response.MINIMIZE),
+    Response("avg_utility", Response.MAXIMIZE),
+    Response("avg_inertia", Response.MAXIMIZE),
+    Response("avg_reliability", Response.MAXIMIZE)
+]
 
-# Calculate the hypervolume
-hv_indicator = HV(ref_point=np.array([1.0, 1.0, 1.0, 1.0]))
-best_hv = hv_indicator.do(res.F)
+model.levers = [CubicDPSLever("policy", num_rbfs=3)]
 
-# Get the best solution and save the state-action pairs
-best_solution = res.X[np.argmax(res.F[:, 0])]  # Assumes maximizing objective 0
+setup_cache(file="lake_cache.cache")
+output = cache("dps_output", lambda: optimize(model, "NSGAII", 10000))
 
-# Save the RBF parameters to a file
-C, R, W = best_solution[0:2], best_solution[2:4], best_solution[4:6]
-with open('rbf_params.pkl', 'wb') as f:
-    pickle.dump((C, R, W), f)
-
-print(f"Best hypervolume: {best_hv}")
-print("RBF parameters saved to 'rbf_params.pkl'")
+print(output)
+print("Number of solutions discovered:", len(output))
+scatter3d(model, output)
+plt.show()
