@@ -4,6 +4,7 @@ import platypus
 import numpy as np
 import shelve
 from rhodium import *
+from pareto import *
 from scipy.optimize import brentq as root
 
 # Define constants for the lake model
@@ -219,78 +220,25 @@ def get_model_parameters():
     """
     return num_years, num_samples, inertia_threshold, reliability_threshold, num_rbfs, num_vars
 
-
-def load_rbf_parameters_from_cache(cache_file):
+def unpack_cache(cache_file):
     """
-    Loads the RBF parameters (centers, radii, and weights) from a cache file.
+    Loads the RBF parameters (centers, radii, weights) and objective values 
+    (max_phosphorus, avg_utility, avg_inertia, avg_reliability) from a cache file.
 
     Parameters:
         cache_file (str): Path to the cache file.
 
     Returns:
-        np.ndarray: A 3 x num_samples matrix where each row contains all centers, radii, 
-                    and weights respectively across all samples.
+        tuple: 
+            np.ndarray: A 3 x num_samples matrix where each row contains all centers, 
+                        radii, and weights respectively across all samples.
+            np.ndarray: A matrix where each row contains the objective values 
+                        (max_phosphorus, avg_utility, avg_inertia, avg_reliability) 
+                        for each solution.
     """
-    centers = []
-    radii = []
-    weights = []
-
-    # Open the cache file
-    with shelve.open(cache_file) as cache:
-        # Assuming there is only one main dataset in the cache
-        for key in cache:
-            dataset = cache[key]
-
-            # Attempt to convert dataset to DataFrame
-            try:
-                df = dataset.as_dataframe()
-            except Exception as e:
-                print(f"Error converting to DataFrame: {e}")
-                continue
-
-            # Iterate over each row (solution) in the DataFrame
-            for _, row in df.iterrows():
-                # Access the policy and rbf_params
-                policy = row['policy']
-                rbf_params = policy.get('rbf_params', [])
-
-                # Extract centers, radii, and weights
-                solution_centers = [rbf['center'] for rbf in rbf_params]
-                solution_radii = [rbf['radius'] for rbf in rbf_params]
-                solution_weights = [rbf['weight'] for rbf in rbf_params]
-
-                # Store values in the respective lists
-                centers.extend(solution_centers)
-                radii.extend(solution_radii)
-                weights.extend(solution_weights)
-
-        # Convert lists to numpy arrays and stack them as rows
-        C = np.array(centers)
-    R = np.array(radii)
-    W = np.array(weights)
-
-    # Reshape into a 3 x num_samples matrix if needed
-    num_samples = len(centers)
-    rbf_matrix = np.vstack((C, R, W)).reshape(3, num_samples)
-
-    return rbf_matrix
-
-def load_objective_values_from_cache(cache_file):
-    """
-    Loads objective values (max_phosphorus, avg_utility, avg_inertia, avg_reliability) 
-    from a cache file.
-
-    Parameters:
-        cache_file (str): Path to the cache file.
-
-    Returns:
-        np.ndarray: A matrix where each row contains the objective values for each solution.
-    """
-    # Initialize lists to store the objective values across all samples
-    max_phosphorus = []
-    avg_utility = []
-    avg_inertia = []
-    avg_reliability = []
+    # Initialize lists to store RBF parameters and objective values
+    centers, radii, weights = [], [], []
+    max_phosphorus, avg_utility, avg_inertia, avg_reliability = [], [], [], []
 
     # Open the cache file
     with shelve.open(cache_file) as cache:
@@ -305,15 +253,64 @@ def load_objective_values_from_cache(cache_file):
                 print(f"Error converting to DataFrame: {e}")
                 continue
 
-            # Iterate over each row (solution) in the DataFrame
+            # Process each solution in the DataFrame
             for _, row in df.iterrows():
-                # Extract objective values from each solution
+                # Extract RBF parameters
+                policy = row['policy']
+                rbf_params = policy.get('rbf_params', [])
+                centers.extend([rbf['center'] for rbf in rbf_params])
+                radii.extend([rbf['radius'] for rbf in rbf_params])
+                weights.extend([rbf['weight'] for rbf in rbf_params])
+
+                # Extract objective values
                 max_phosphorus.append(row['max_phosphorus'])
                 avg_utility.append(row['avg_utility'])
                 avg_inertia.append(row['avg_inertia'])
                 avg_reliability.append(row['avg_reliability'])
 
-    # Convert lists to a numpy array and stack them as rows
+    # Stack RBF parameters into a 3 x num_samples matrix
+    C = np.array(centers)
+    R = np.array(radii)
+    W = np.array(weights)
+    num_samples = len(centers)
+    rbf_matrix = np.vstack((C, R, W)).reshape(3, num_samples)
+
+    # Stack objective values into a matrix where each row corresponds to a solution
     objectives_matrix = np.vstack((max_phosphorus, avg_utility, avg_inertia, avg_reliability)).T
-    
-    return objectives_matrix
+
+    return rbf_matrix, objectives_matrix
+
+def find_pareto_frontier(cache_file, epsilons=None):
+    """
+    Finds the Pareto-optimal solutions from a cache file containing multiple RBF solutions.
+
+    Parameters:
+        cache_file (str): Path to the cache file containing solutions.
+        epsilons (list of float): Epsilon values for epsilon-nondominated sorting.
+            If None, defaults to a very small epsilon for each objective.
+
+    Returns:
+        pareto_solutions (np.ndarray): Array of Pareto-optimal RBF parameters.
+        pareto_objectives (np.ndarray): Array of objective values for Pareto-optimal solutions.
+    """
+    # Load the RBF parameters and objective values from the cache
+    rbf_parameters, objective_values = unpack_cache(cache_file)
+
+    # If no epsilon values are provided, set a small default epsilon for each objective
+    if epsilons is None:
+        epsilons = [1e-9] * objective_values.shape[1]  # Assuming 4 objectives by default
+
+    # Prepare the table of objective values with tag-along RBF parameters
+    solutions = [(objective_values[i].tolist(), rbf_parameters[:, i])
+                 for i in range(objective_values.shape[0])]
+
+    # Perform epsilon-nondominated sorting to find Pareto-optimal solutions
+    archive = Archive(epsilons)
+    for objectives, tagalong in solutions:
+        archive.sortinto(objectives, tagalong)
+
+    # Extract Pareto-optimal RBF parameters and their objectives
+    pareto_solutions = np.array([tagalong for tagalong in archive.tagalongs])
+    pareto_objectives = np.array([objectives for objectives in archive.archive])
+
+    return pareto_solutions, pareto_objectives
