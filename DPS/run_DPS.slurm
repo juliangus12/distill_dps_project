@@ -5,14 +5,8 @@
 #SBATCH --time=02:00:00
 #SBATCH --mem=4G
 #SBATCH --cpus-per-task=1
-#SBATCH --ntasks=1              # 1 task per array job
-#SBATCH --array=1-200           # Default array range, adjustable via num_instances
-
-# Source Conda's initialization script
-source ~/anaconda3/etc/profile.d/conda.sh  # Adjust this path if needed
-
-# Activate the Conda environment
-conda activate SLP
+#SBATCH --ntasks=1
+#SBATCH --array=1-200
 
 # Ensure the data and slurm directories exist
 mkdir -p data/slurm
