@@ -9,8 +9,8 @@
 #SBATCH --array=1-200  # Adjust this range for the number of seeds
 
 # Ensure the caches and slurm output directories exist
-mkdir -p Optimization/caches
-mkdir -p Optimization/slurm_output
+mkdir -p caches
+mkdir -p slurm_output
 
 # Execute DPS.py with the current SLURM_ARRAY_TASK_ID as the seed
-python Optimization/dps.py
+python dps.py
