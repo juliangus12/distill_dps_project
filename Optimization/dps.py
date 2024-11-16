@@ -1,6 +1,6 @@
 import os
 from rhodium import *
-from Utils.lake_model_utils import *  # Import utility functions from Utils
+from Utils import *
 
 try:
     # Define the directory to store cache files
