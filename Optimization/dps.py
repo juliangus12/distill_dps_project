@@ -1,6 +1,14 @@
 import os
 from rhodium import *
-from Utils import *
+
+
+# Add the project root directory to Python's module search path
+project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+if project_root not in sys.path:
+    sys.path.append(project_root)
+
+from Utils.lake_model_utils import *
+
 
 try:
     # Define the directory to store cache files
