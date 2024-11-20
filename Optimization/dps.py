@@ -1,28 +1,27 @@
 import os
 from rhodium import *
+import sys
 
-
-# Add the project root directory to Python's module search path
+# Necessary for importing the functions inside of Utils/lake_model_utils.py
 project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 if project_root not in sys.path:
     sys.path.append(project_root)
 
 from Utils.lake_model_utils import *
 
-
+# Rename the directory to "solutions"
 try:
-    # Define the directory to store cache files
-    cache_dir = os.path.join(os.path.dirname(__file__), "caches")
-    os.makedirs(cache_dir, exist_ok=True)
+    solutions_dir = os.path.join(os.path.dirname(__file__), "solutions")
+    os.makedirs(solutions_dir, exist_ok=True)
 except Exception as e:
-    raise RuntimeError(f"Failed to create or access the cache directory at {cache_dir}: {e}")
+    raise RuntimeError(f"Failed to create or access the solutions directory at {solutions_dir}: {e}")
 
 try:
     # Get the seed from the environment variable passed by SLURM or use "default"
     seed = os.environ.get("SLURM_ARRAY_TASK_ID", "default")
     if seed == "default":
         print("Warning: SLURM_ARRAY_TASK_ID is not set. Using default seed value.")
-    cache_file = os.path.join(cache_dir, f"{seed}.cache")
+    cache_file = os.path.join(solutions_dir, f"{seed}.cache")
 except Exception as e:
     raise RuntimeError(f"Failed to construct cache file path: {e}")
 
@@ -71,23 +70,19 @@ try:
 except Exception as e:
     raise RuntimeError(f"Error while printing optimization results: {e}")
 
-try:
-    # Find and save Pareto frontier
-    pareto_solutions = find_pareto_frontier(cache_file)
-    pareto_save_path = os.path.join(cache_dir, f"pareto_{seed}.txt")
+# New directory for Pareto frontier results
+pareto_dir = os.path.join(os.path.dirname(__file__), "pareto_frontiers")
+os.makedirs(pareto_dir, exist_ok=True)
 
-    with open(pareto_save_path, "w") as f:
-        f.write("\n".join(map(str, pareto_solutions)))
+try:
+    # Find Pareto frontier with filtering for high economic benefit and reliability
+    pareto_solutions, pareto_objectives = find_pareto_frontier(cache_file, filter=True)
+    
+    # Save the Pareto frontier solutions
+    pareto_save_path = os.path.join(pareto_dir, f"pareto_{seed}.txt")
+    np.savetxt(pareto_save_path, pareto_solutions, fmt="%.6f", header="Filtered Pareto Frontier Solutions")
     print(f"Pareto frontier saved at: {pareto_save_path}")
 except FileNotFoundError as e:
     raise FileNotFoundError(f"Cache file not found at {cache_file}. Ensure the optimization step completed successfully: {e}")
 except Exception as e:
     raise RuntimeError(f"Error while finding or saving the Pareto frontier: {e}")
-
-try:
-    # Optional: Plot the results (disabled for SLURM batch jobs)
-    # Uncomment the line below for local runs
-    # scatter3d(model, output)
-    pass
-except Exception as e:
-    print(f"Warning: Error while plotting results. Skipping plot generation. Error: {e}")

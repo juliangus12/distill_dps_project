@@ -224,7 +224,7 @@ def get_model_parameters():
 def unpack_cache(cache_file):
     """
     Loads the RBF parameters (centers, radii, weights) and objective values 
-    (max_phosphorus, avg_utility, avg_inertia, avg_reliability) from a cache file.
+    (avg_max_phosphorus, avg_utility, avg_inertia, avg_reliability) from a cache file.
 
     Parameters:
         cache_file (str): Path to the cache file.
@@ -234,12 +234,12 @@ def unpack_cache(cache_file):
             np.ndarray: A 3 x num_samples matrix where each row contains all centers, 
                         radii, and weights respectively across all samples.
             np.ndarray: A matrix where each row contains the objective values 
-                        (max_phosphorus, avg_utility, avg_inertia, avg_reliability) 
+                        (avg_max_phosphorus, avg_utility, avg_inertia, avg_reliability) 
                         for each solution.
     """
     # Initialize lists to store RBF parameters and objective values
     centers, radii, weights = [], [], []
-    max_phosphorus, avg_utility, avg_inertia, avg_reliability = [], [], [], []
+    avg_max_phosphorus, avg_utility, avg_inertia, avg_reliability = [], [], [], []
 
     # Open the cache file
     with shelve.open(cache_file) as cache:
@@ -254,6 +254,10 @@ def unpack_cache(cache_file):
                 print(f"Error converting to DataFrame: {e}")
                 continue
 
+            # Log the available keys for debugging
+            if 'policy' not in df.columns:
+                raise KeyError(f"'policy' key is missing in the DataFrame. Available keys: {list(df.columns)}")
+
             # Process each solution in the DataFrame
             for _, row in df.iterrows():
                 # Extract RBF parameters
@@ -264,10 +268,13 @@ def unpack_cache(cache_file):
                 weights.extend([rbf['weight'] for rbf in rbf_params])
 
                 # Extract objective values
-                max_phosphorus.append(row['max_phosphorus'])
-                avg_utility.append(row['avg_utility'])
-                avg_inertia.append(row['avg_inertia'])
-                avg_reliability.append(row['avg_reliability'])
+                try:
+                    avg_max_phosphorus.append(row['avg_max_phosphorus'])
+                    avg_utility.append(row['avg_utility'])
+                    avg_inertia.append(row['avg_inertia'])
+                    avg_reliability.append(row['avg_reliability'])
+                except KeyError as e:
+                    raise KeyError(f"Key {e} is missing in the DataFrame. Available keys: {list(df.columns)}")
 
     # Stack RBF parameters into a 3 x num_samples matrix
     C = np.array(centers)
@@ -277,18 +284,21 @@ def unpack_cache(cache_file):
     rbf_matrix = np.vstack((C, R, W)).reshape(3, num_samples)
 
     # Stack objective values into a matrix where each row corresponds to a solution
-    objectives_matrix = np.vstack((max_phosphorus, avg_utility, avg_inertia, avg_reliability)).T
+    objectives_matrix = np.vstack((avg_max_phosphorus, avg_utility, avg_inertia, avg_reliability)).T
 
     return rbf_matrix, objectives_matrix
 
-def find_pareto_frontier(cache_file, epsilons=None):    
+def find_pareto_frontier(cache_file, epsilons=None, filter=False):
     """
     Finds the Pareto-optimal solutions from a cache file containing multiple RBF solutions.
+    Optionally filters solutions for high economic benefit and reliability.
 
     Parameters:
         cache_file (str): Path to the cache file containing solutions.
         epsilons (list of float): Epsilon values for epsilon-nondominated sorting.
             If None, defaults to a very small epsilon for each objective.
+        filter_by_economics (bool): If True, filters the Pareto frontier to return solutions 
+            with the highest economic benefit and reliability.
 
     Returns:
         pareto_solutions (np.ndarray): Array of Pareto-optimal RBF parameters.
@@ -313,5 +323,12 @@ def find_pareto_frontier(cache_file, epsilons=None):
     # Extract Pareto-optimal RBF parameters and their objectives
     pareto_solutions = np.array([tagalong for tagalong in archive.tagalongs])
     pareto_objectives = np.array([objectives for objectives in archive.archive])
+
+    # If filtering by economic benefit and reliability
+    if filter:
+        # Objective indices: economic benefit (index 1) and reliability (index 3)
+        best_indices = np.lexsort((-pareto_objectives[:, 1], -pareto_objectives[:, 3]))
+        pareto_solutions = pareto_solutions[best_indices]
+        pareto_objectives = pareto_objectives[best_indices]
 
     return pareto_solutions, pareto_objectives
