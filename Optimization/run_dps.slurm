@@ -8,9 +8,8 @@
 #SBATCH --ntasks=1
 #SBATCH --array=1-200
 
-# Ensure necessary directories exist
-mkdir -p slurm_output
-mkdir -p caches
+mkdir -p slurm_output # Directory for slurm output and error files 
+mkdir -p solutions # Directory for sotring cache files containing RBF parameters and objective values 
 
 # Run the DPS optimization script
 python dps.py
