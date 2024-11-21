@@ -81,7 +81,7 @@ class DPSExpertPolicy:
         return np.array([[action]], dtype=np.float32), None 
 
     def __call__(self, obs, state=None, dones=None):
-        actions, state = self.predict(obs)
+        actions, state = self.output(obs)
         return actions, state
 
 # Function to calculate critical phosphorus level (Pcrit)
@@ -98,32 +98,39 @@ def calculate_pcrit(loss_rate=phosphorus_loss_rate, recycle_rate=phosphorus_recy
     """
     return root(lambda x: x**recycle_rate / (1 + x**recycle_rate) - loss_rate * x, 0.01, 1.5)
 
-# Function to generate synthetic natural inflow data using a log-normal distribution
-def generate_inflow_data(mean=inflow_mean, variance=inflow_variance, num_samples=num_samples, num_years=num_years):
+def generate_inflow_data(mean=inflow_mean, variance=inflow_variance, num_samples=num_samples, num_years=num_years, single=False):
     """
     Generates synthetic natural inflow data for the lake model using a log-normal distribution.
     
     Parameters:
         mean (float): The desired mean of the real-space distribution.
         variance (float): The desired variance of the real-space distribution.
-        num_samples (int): Number of samples to generate.
-        num_years (int): Number of years per sample.
-        
+        num_samples (int): Number of samples to generate (ignored if `single=True`).
+        num_years (int): Number of years per sample (ignored if `single=True`).
+        single (bool): If True, generates a single inflow value; otherwise, generates a list of lists.
+
     Returns:
-        list: Generated natural inflow data as a list of lists, each with `num_years` values.
+        float or list: A single inflow value (if `single=True`) or a list of lists (if `single=False`).
     """
     # Calculate sigma and mu for the log-normal distribution
     sigma = math.sqrt(math.log(1 + variance / mean**2))
     mu = math.log(mean) - (sigma**2 / 2)
 
-    # Generate `num_samples` sets of `num_years` inflow values using the Box-Muller transform
+    if single:
+        # Generate a single inflow value
+        u1, u2 = random.random(), random.random()
+        z0 = math.sqrt(-2 * math.log(u1)) * math.cos(2 * math.pi * u2)
+        inflow_value = math.exp(mu + sigma * z0)
+        return inflow_value
+
+    # Generate a list of lists for inflow data
     inflow_data = []
     for _ in range(num_samples):
         inflow = []
         for _ in range(num_years):
             u1, u2 = random.random(), random.random()
             z0 = math.sqrt(-2 * math.log(u1)) * math.cos(2 * math.pi * u2)
-            inflow_value = math.exp(mu + sigma * z0)  # Transform to log-normal
+            inflow_value = math.exp(mu + sigma * z0)
             inflow.append(inflow_value)
         inflow_data.append(inflow)
 
@@ -221,112 +228,93 @@ def get_model_parameters():
     """
     return num_years, num_samples, inertia_threshold, reliability_threshold, num_rbfs, num_vars
 
-def unpack_cache(cache_file):
+def unpack_solutions(solutions_file):
     """
-    Loads the RBF parameters (centers, radii, weights) and objective values 
-    (avg_max_phosphorus, avg_utility, avg_inertia, avg_reliability) from a cache file.
+    Loads RBF parameters and objective values from a text file containing solutions and objectives.
 
     Parameters:
-        cache_file (str): Path to the cache file.
+        solutions_file (str): Path to the text file containing Pareto solutions and objectives.
 
     Returns:
-        tuple: 
-            np.ndarray: A 3 x num_samples matrix where each row contains all centers, 
-                        radii, and weights respectively across all samples.
-            np.ndarray: A matrix where each row contains the objective values 
-                        (avg_max_phosphorus, avg_utility, avg_inertia, avg_reliability) 
-                        for each solution.
+        tuple:
+            np.ndarray: RBF parameter matrix (num_solutions x num_parameters).
+            np.ndarray: Objective values matrix (num_solutions x num_objectives).
     """
-    # Initialize lists to store RBF parameters and objective values
-    centers, radii, weights = [], [], []
-    avg_max_phosphorus, avg_utility, avg_inertia, avg_reliability = [], [], [], []
+    rbf_parameters = []
+    objective_values = []
+    reading_solutions = False
+    reading_objectives = False
 
-    # Open the cache file
-    with shelve.open(cache_file) as cache:
-        # Assuming there is only one main dataset in the cache
-        for key in cache:
-            dataset = cache[key]
-
-            # Convert dataset to DataFrame for easy access
-            try:
-                df = dataset.as_dataframe()
-            except Exception as e:
-                print(f"Error converting to DataFrame: {e}")
+    with open(solutions_file, "r") as f:
+        for line in f:
+            line = line.strip()
+            if not line:  # Skip empty lines
+                continue
+            if line.startswith("Pareto Solutions:"):
+                reading_solutions = True
+                reading_objectives = False
+                continue
+            elif line.startswith("Pareto Objectives:"):
+                reading_solutions = False
+                reading_objectives = True
                 continue
 
-            # Log the available keys for debugging
-            if 'policy' not in df.columns:
-                raise KeyError(f"'policy' key is missing in the DataFrame. Available keys: {list(df.columns)}")
+            # Parse solutions or objectives
+            if reading_solutions:
+                rbf_parameters.append([float(value) for value in line.split(",")])
+            elif reading_objectives:
+                objective_values.append([float(value) for value in line.split(",")])
 
-            # Process each solution in the DataFrame
-            for _, row in df.iterrows():
-                # Extract RBF parameters
-                policy = row['policy']
-                rbf_params = policy.get('rbf_params', [])
-                centers.extend([rbf['center'] for rbf in rbf_params])
-                radii.extend([rbf['radius'] for rbf in rbf_params])
-                weights.extend([rbf['weight'] for rbf in rbf_params])
+    # Convert to numpy arrays
+    rbf_parameters = np.array(rbf_parameters)
+    objective_values = np.array(objective_values)
 
-                # Extract objective values
-                try:
-                    avg_max_phosphorus.append(row['avg_max_phosphorus'])
-                    avg_utility.append(row['avg_utility'])
-                    avg_inertia.append(row['avg_inertia'])
-                    avg_reliability.append(row['avg_reliability'])
-                except KeyError as e:
-                    raise KeyError(f"Key {e} is missing in the DataFrame. Available keys: {list(df.columns)}")
+    return rbf_parameters, objective_values
 
-    # Stack RBF parameters into a 3 x num_samples matrix
-    C = np.array(centers)
-    R = np.array(radii)
-    W = np.array(weights)
-    num_samples = len(centers)
-    rbf_matrix = np.vstack((C, R, W)).reshape(3, num_samples)
-
-    # Stack objective values into a matrix where each row corresponds to a solution
-    objectives_matrix = np.vstack((avg_max_phosphorus, avg_utility, avg_inertia, avg_reliability)).T
-
-    return rbf_matrix, objectives_matrix
-
-def find_pareto_frontier(cache_file, epsilons=None, filter=False):
+def find_pareto_frontier(solutions, epsilons=None, filter=False):
     """
-    Finds the Pareto-optimal solutions from a cache file containing multiple RBF solutions.
+    Finds the Pareto-optimal solutions from a list of solutions.
     Optionally filters solutions for high economic benefit and reliability.
 
     Parameters:
-        cache_file (str): Path to the cache file containing solutions.
+        solutions (list): List of solutions from optimization.
         epsilons (list of float): Epsilon values for epsilon-nondominated sorting.
             If None, defaults to a very small epsilon for each objective.
-        filter_by_economics (bool): If True, filters the Pareto frontier to return solutions 
-            with the highest economic benefit and reliability.
+        filter (bool): If True, filters the Pareto frontier for high economic benefit and reliability.
 
     Returns:
-        pareto_solutions (np.ndarray): Array of Pareto-optimal RBF parameters.
-        pareto_objectives (np.ndarray): Array of objective values for Pareto-optimal solutions.
+        tuple:
+            np.ndarray: Array of Pareto-optimal RBF parameters.
+            np.ndarray: Array of objective values for Pareto-optimal solutions.
     """
-    # Load the RBF parameters and objective values from the cache
-    rbf_parameters, objective_values = unpack_cache(cache_file)
+    rbf_parameters, objective_values = [], []
 
-    # If no epsilon values are provided, set a small default epsilon for each objective
+    # Process each solution to extract RBF parameters and objectives
+    for solution in solutions:
+        policy = solution["policy"]
+        rbf_parameters.append(
+            [param for rbf in policy["rbf_params"] for param in (rbf["center"], rbf["radius"], rbf["weight"])]
+        )
+        objective_values.append(
+            [solution["avg_max_phosphorus"], solution["avg_utility"], solution["avg_inertia"], solution["avg_reliability"]]
+        )
+
+    rbf_parameters = np.array(rbf_parameters).T
+    objective_values = np.array(objective_values)
+
+    # Perform epsilon-nondominated sorting
     if epsilons is None:
-        epsilons = [1e-9] * objective_values.shape[1]  # Assuming 4 objectives by default
+        epsilons = [1e-9] * objective_values.shape[1]
 
-    # Prepare the table of objective values with tag-along RBF parameters
-    solutions = [(objective_values[i].tolist(), rbf_parameters[:, i])
-                 for i in range(objective_values.shape[0])]
-
-    # Perform epsilon-nondominated sorting to find Pareto-optimal solutions
     archive = Archive(epsilons)
-    for objectives, tagalong in solutions:
-        archive.sortinto(objectives, tagalong)
+    for objectives, parameters in zip(objective_values, rbf_parameters.T):
+        archive.sortinto(objectives.tolist(), parameters.tolist())
 
-    # Extract Pareto-optimal RBF parameters and their objectives
     pareto_solutions = np.array([tagalong for tagalong in archive.tagalongs])
-    pareto_objectives = np.array([objectives for objectives in archive.archive])
+    pareto_objectives = np.array([obj for obj in archive.archive])
 
-    # If filtering by economic benefit and reliability
+    # Apply filtering for high economic benefit and reliability
     if filter:
-        # Objective indices: economic benefit (index 1) and reliability (index 3)
         best_indices = np.lexsort((-pareto_objectives[:, 1], -pareto_objectives[:, 3]))
         pareto_solutions = pareto_solutions[best_indices]
         pareto_objectives = pareto_objectives[best_indices]
