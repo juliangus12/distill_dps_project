@@ -4,7 +4,7 @@ import platypus
 import numpy as np
 import shelve
 from rhodium import *
-from Utils.pareto import *
+from pareto import *
 from scipy.optimize import brentq as root
 
 # Define constants for the lake model
@@ -66,148 +66,88 @@ class CubicDPSLever(Lever):
             rbf["weight"] /= weight_sum  # Normalize weights to sum to 1
         return policy
 
-# Expert policy class for gym environment
+# In lake_model_utils.py
 class DPSExpertPolicy:
     def __init__(self, C, R, W, observation_space, action_space):
-        self.C = C
-        self.R = R
-        self.W = W
+        # Flatten RBF parameters into a single list
+        self.vars = []
+        for c, r, w in zip(C, R, W):
+            self.vars.extend([c, r, w])
+
         self.observation_space = observation_space
         self.action_space = action_space
 
-    def output(self, obs):
-        lake_state = obs[0]
-        action = compute_policy_output(lake_state, self.C, self.R, self.W)
-        return np.array([[action]], dtype=np.float32), None 
+    def predict(self, obs, state=None, mask=None, deterministic=False):
+        """
+        Predict method compatible with Stable Baselines 3 policies.
 
-    def __call__(self, obs, state=None, dones=None):
-        actions, state = self.output(obs)
-        return actions, state
+        Parameters:
+            obs (np.ndarray): Observations, could be a scalar or an array.
+            state: Not used, present for API compatibility.
+            mask: Not used, present for API compatibility.
+            deterministic (bool): Not used, present for API compatibility.
 
-# Function to calculate critical phosphorus level (Pcrit)
-def calculate_pcrit(loss_rate=phosphorus_loss_rate, recycle_rate=phosphorus_recycling_rate):
-    """
-    Calculate the critical phosphorus level (Pcrit) based on the recycling rate and loss rate.
+        Returns:
+            tuple: Actions corresponding to the observations, and the state (None in this case).
+        """
+        # Ensure obs is a NumPy array
+        obs = np.array(obs)
 
-    Parameters:
-        loss_rate (float): Phosphorus loss rate.
-        recycle_rate (float): Phosphorus recycling rate.
+        # Handle scalar and batch observations
+        if obs.ndim == 0:
+            # Single observation
+            action = compute_policy_output(obs, self.vars)
+            return action, None  # Return None for the state
+        else:
+            # Batch of observations
+            actions = np.array([compute_policy_output(o, self.vars) for o in obs])
+            return actions, None  # Return None for the state
 
-    Returns:
-        float: The critical phosphorus level (Pcrit).
-    """
-    return root(lambda x: x**recycle_rate / (1 + x**recycle_rate) - loss_rate * x, 0.01, 1.5)
+        
+    def __call__(self, obs, state=None, mask=None):
+        action, _ = self.predict(obs)
+        return action
 
-def generate_inflow_data(mean=inflow_mean, variance=inflow_variance, num_samples=num_samples, num_years=num_years, single=False):
-    """
-    Generates synthetic natural inflow data for the lake model using a log-normal distribution.
-    
-    Parameters:
-        mean (float): The desired mean of the real-space distribution.
-        variance (float): The desired variance of the real-space distribution.
-        num_samples (int): Number of samples to generate (ignored if `single=True`).
-        num_years (int): Number of years per sample (ignored if `single=True`).
-        single (bool): If True, generates a single inflow value; otherwise, generates a list of lists.
-
-    Returns:
-        float or list: A single inflow value (if `single=True`) or a list of lists (if `single=False`).
-    """
-    # Calculate sigma and mu for the log-normal distribution
-    sigma = math.sqrt(math.log(1 + variance / mean**2))
-    mu = math.log(mean) - (sigma**2 / 2)
-
-    if single:
-        # Generate a single inflow value
-        u1, u2 = random.random(), random.random()
-        z0 = math.sqrt(-2 * math.log(u1)) * math.cos(2 * math.pi * u2)
-        inflow_value = math.exp(mu + sigma * z0)
-        return inflow_value
-
-    # Generate a list of lists for inflow data
-    inflow_data = []
-    for _ in range(num_samples):
-        inflow = []
-        for _ in range(num_years):
-            u1, u2 = random.random(), random.random()
-            z0 = math.sqrt(-2 * math.log(u1)) * math.cos(2 * math.pi * u2)
-            inflow_value = math.exp(mu + sigma * z0)
-            inflow.append(inflow_value)
-        inflow_data.append(inflow)
-
-    return inflow_data
-
-# Function to compute policy output Y based on the current lake state and policy parameters
-def compute_policy_output(lake_state, centers, radii, weights):
+def compute_policy_output(lake_state, vars):
     """
     Computes the policy output Y based on the current lake state and policy parameters.
-    
+
     Parameters:
-        lake_state (float): The current phosphorus level in the lake.
-        centers (list of float): Centers of the RBFs.
-        radii (list of float): Radii of the RBFs.
-        weights (list of float): Weights of the RBFs.
+        lake_state (float): Current phosphorus level in the lake.
+        vars (list): Flattened list of RBF parameters [C1, R1, W1, C2, R2, W2, ...].
 
     Returns:
         float: The controlled phosphorus inflow based on the RBF policy.
     """
-    policy_value = 0
-    for i in range(len(centers)):
-        radius = radii[i]
-        if radius > 0:
-            policy_value += weights[i] * ((abs(lake_state - centers[i]) / radius) ** 3)
-    return max(0.01, min(0.1, policy_value))  # Constrain the inflow within 0.01 and 0.1
+    n = len(vars) // 3  # Number of RBFs
+    m = 1  # Single input dimension for lake state
+    C = np.zeros([n, m])
+    B = np.zeros([n, m])
+    W = np.zeros(n)
 
-def lake_model(policy, loss_rate=phosphorus_loss_rate, recycle_rate=phosphorus_recycling_rate,
-                 mean=inflow_mean, variance=inflow_variance, benefit=benefit_scale, 
-                 discount=discount_rate, num_samples=num_samples, num_steps=num_years):
-    """
-    Simulates the lake phosphorus dynamics with given parameters and policy.
+    # Extract centers, radii, and weights from vars
+    for i in range(n):
+        W[i] = vars[(i + 1) * (2 * m + 1) - 1]
+        for j in range(m):
+            C[i, j] = vars[(2 * m + 1) * i + 2 * j]
+            B[i, j] = vars[(2 * m + 1) * i + 2 * j + 1]
 
-    Parameters:
-        policy (dict): DPS policy with RBF parameters.
-        loss_rate, recycle_rate (float): Lake parameters for phosphorus dynamics.
-        mean, variance (float): Mean and variance for natural inflows.
-        benefit, discount (float): Parameters for economic utility.
-        num_samples, num_steps (int): Monte Carlo sample size and simulation duration.
+    # Normalize weights to sum to 1
+    total_weight = sum(W)
+    if total_weight != 0.0:
+        W = W / total_weight
+    else:
+        W = np.ones(n) / n  # Avoid division by zero
 
-    Returns:
-        tuple: (max_phosphorus, avg_utility, avg_inertia, avg_reliability)
-    """
-    critical_p = calculate_pcrit(loss_rate, recycle_rate)
-    lake_state = [0] * num_steps
-    avg_daily_p = [0] * num_steps
-    total_reliability, total_utility, total_inertia = 0, 0, 0
+    # Evaluate the RBF policy
+    Y = 0
+    for i in range(n):
+        for j in range(m):
+            if B[i, j] != 0:
+                Y += W[i] * ((abs(lake_state - C[i, j]) / B[i, j]) ** 3)
 
-    inflow_data = generate_inflow_data(mean, variance, num_samples, num_steps)
-
-    for sample in inflow_data:
-        lake_state[0] = 0
-        emissions = [compute_policy_output(lake_state[0], 
-                                           [rbf["center"] for rbf in policy["rbf_params"]],
-                                           [rbf["radius"] for rbf in policy["rbf_params"]],
-                                           [rbf["weight"] for rbf in policy["rbf_params"]])
-                     for _ in range(num_steps)]
-        
-        for step in range(1, num_steps):
-            inflow = sample[step - 1]
-            lake_state[step] = (
-                (1 - loss_rate) * lake_state[step - 1] +
-                lake_state[step - 1]**recycle_rate / (1 + lake_state[step - 1]**recycle_rate) +
-                emissions[step - 1] + inflow
-            )
-            avg_daily_p[step] += lake_state[step] / num_samples
-        
-        total_reliability += sum(1 for p in lake_state if p < critical_p) / num_steps
-        total_utility += sum(benefit * emissions[i] * discount**i for i in range(num_steps))
-        total_inertia += sum(1 for i in range(1, num_steps) if emissions[i] - emissions[i - 1] > inertia_threshold) / (num_steps - 1)
-
-    return (
-        max(avg_daily_p), 
-        total_utility / num_samples, 
-        total_inertia / num_samples, 
-        total_reliability / num_samples
-    )
-
+    # Constrain output
+    return min(0.1, max(Y, 0.01))
 # Function to retrieve main simulation constants for lake problem
 def get_simulation_constants():
     """
@@ -320,3 +260,103 @@ def find_pareto_frontier(solutions, epsilons=None, filter=False):
         pareto_objectives = pareto_objectives[best_indices]
 
     return pareto_solutions, pareto_objectives
+
+# Function to calculate the critical phosphorus level (Pcrit)
+def calculate_pcrit(loss_rate=phosphorus_loss_rate, recycle_rate=phosphorus_recycling_rate):
+    """
+    Calculate the critical phosphorus level (Pcrit) based on the recycling rate and loss rate.
+
+    Parameters:
+        loss_rate (float): Phosphorus loss rate.
+        recycle_rate (float): Phosphorus recycling rate.
+
+    Returns:
+        float: The critical phosphorus level (Pcrit).
+    """
+    return root(lambda x: x**recycle_rate / (1 + x**recycle_rate) - loss_rate * x, 0.01, 1.5)
+
+def generate_inflow_data(mean=inflow_mean, variance=inflow_variance, num_samples=num_samples, num_years=num_years, single=False):
+    """
+    Generates synthetic natural inflow data for the lake model using a log-normal distribution.
+
+    Parameters:
+        mean (float): Mean of the inflow distribution.
+        variance (float): Variance of the inflow distribution.
+        num_samples (int): Number of samples for Monte Carlo simulations (ignored if single=True).
+        num_years (int): Number of years per sample (ignored if single=True).
+        single (bool): If True, generates a single inflow value; otherwise, generates a list of lists.
+
+    Returns:
+        float or list: A single inflow value (if single=True) or a list of lists (if single=False).
+    """
+    sigma = math.sqrt(math.log(1 + variance / mean**2))
+    mu = math.log(mean) - (sigma**2 / 2)
+
+    if single:
+        # Generate a single inflow value
+        u1, u2 = random.random(), random.random()
+        z0 = math.sqrt(-2 * math.log(u1)) * math.cos(2 * math.pi * u2)
+        inflow_value = math.exp(mu + sigma * z0)
+        return inflow_value
+
+    # Generate a list of lists for inflow data
+    inflow_data = []
+    for _ in range(num_samples):
+        inflow = []
+        for _ in range(num_years):
+            u1, u2 = random.random(), random.random()
+            z0 = math.sqrt(-2 * math.log(u1)) * math.cos(2 * math.pi * u2)
+            inflow_value = math.exp(mu + sigma * z0)
+            inflow.append(inflow_value)
+        inflow_data.append(inflow)
+
+    return inflow_data
+
+
+# Function to simulate lake dynamics with given policy
+def lake_model(policy, loss_rate=phosphorus_loss_rate, recycle_rate=phosphorus_recycling_rate,
+               mean=inflow_mean, variance=inflow_variance, benefit=benefit_scale,
+               discount=discount_rate, num_samples=num_samples, num_steps=num_years):
+    """
+    Simulates the lake phosphorus dynamics with given parameters and policy.
+
+    Parameters:
+        policy (dict): DPS policy with RBF parameters.
+        loss_rate, recycle_rate (float): Lake parameters for phosphorus dynamics.
+        mean, variance (float): Mean and variance for natural inflows.
+        benefit, discount (float): Parameters for economic utility.
+        num_samples, num_steps (int): Monte Carlo sample size and simulation duration.
+
+    Returns:
+        tuple: (max_phosphorus, avg_utility, avg_inertia, avg_reliability)
+    """
+    critical_p = calculate_pcrit(loss_rate, recycle_rate)
+    lake_state = [0] * num_steps
+    avg_daily_p = [0] * num_steps
+    total_reliability, total_utility, total_inertia = 0, 0, 0
+
+    inflow_data = generate_inflow_data(mean, variance, num_samples, num_steps)
+
+    for sample in inflow_data:
+        lake_state[0] = 0
+        emissions = [compute_policy_output(lake_state[0], policy) for _ in range(num_steps)]
+
+        for step in range(1, num_steps):
+            inflow = sample[step - 1]
+            lake_state[step] = (
+                (1 - loss_rate) * lake_state[step - 1] +
+                lake_state[step - 1]**recycle_rate / (1 + lake_state[step - 1]**recycle_rate) +
+                emissions[step - 1] + inflow
+            )
+            avg_daily_p[step] += lake_state[step] / num_samples
+
+        total_reliability += sum(1 for p in lake_state if p < critical_p) / num_steps
+        total_utility += sum(benefit * emissions[i] * discount**i for i in range(num_steps))
+        total_inertia += sum(1 for i in range(1, num_steps) if emissions[i] - emissions[i - 1] > inertia_threshold) / (num_steps - 1)
+
+    return (
+        max(avg_daily_p),
+        total_utility / num_samples,
+        total_inertia / num_samples,
+        total_reliability / num_samples
+    )
