@@ -28,17 +28,30 @@ class LakeEnv(Env):
 
     def __init__(self, n_years=nYears, q=q, b=b, alpha=alpha, delta=delta,
                  inertia_threshold=-inertia_threshold, reliability_threshold=reliability_threshold,
-                 C=None, R=None, W=None):
+                 C=None, R=None, W=None, rbf_params=None):
         super(LakeEnv, self).__init__()
 
-        # Define action and observation space
-        self.action_space = spaces.Box(low=np.array([0.01]), high=np.array([0.1]), shape=(1,), dtype=np.float32)
-        self.observation_space = spaces.Box(low=0.0, high=2.0, shape=(1,), dtype=np.float32)
+        # Define action and observation space with scalar actions and array observations
+        self.action_space = spaces.Box(low=0.01, high=0.1, shape=(), dtype=np.float32)
+        self.observation_space = spaces.Box(low=0.0, high=np.array([np.inf], dtype=np.float32), shape=(1,), dtype=np.float32)
 
         # Initialize the DPS expert policy
-        if C is None or R is None or W is None:
-            raise ValueError("C, R, and W parameters for the expert policy must be provided.")
-        self.expert_policy = DPSExpertPolicy(C, R, W, self.observation_space, self.action_space)
+        if rbf_params is not None:
+            # vars is a flattened list of [C1, R1, W1, C2, R2, W2, ...]
+            vars = rbf_params
+            n_rbf = len(vars) // 3
+            C = []
+            R = []
+            W = []
+            for i in range(n_rbf):
+                C.append(vars[i * 3])
+                R.append(vars[i * 3 + 1])
+                W.append(vars[i * 3 + 2])
+            self.expert_policy = DPSExpertPolicy(C, R, W, self.observation_space, self.action_space)
+        elif C is not None and R is not None and W is not None:
+            self.expert_policy = DPSExpertPolicy(C, R, W, self.observation_space, self.action_space)
+        else:
+            raise ValueError("Either rbf_params or C, R, and W parameters for the expert policy must be provided.")
 
         # Initialize environment parameters
         self.n_years = n_years
@@ -52,38 +65,37 @@ class LakeEnv(Env):
         self.year = 0
 
     def step(self, learner_action):
-        # Clip the learner's action and ensure it's a (1, 1) shaped array
-        learner_action = np.clip(learner_action, 0.01, 0.1).reshape(1, 1)
-
-        # Calculate lake dynamics
+        learner_action = float(np.clip(learner_action, 0.01, 0.1))
         P_recycling = ((self.lake_state ** self.q) / (1 + self.lake_state ** self.q))
         natural_inflow = generate_inflow_data(mean=mu, variance=sigma, single=True)
         next_lake_state = self.lake_state * (1 - self.b) + P_recycling + learner_action + natural_inflow
-        next_lake_state = np.clip(next_lake_state, self.observation_space.low[0], self.observation_space.high[0])
+        next_lake_state = np.clip(next_lake_state, self.observation_space.low, self.observation_space.high)
 
-        # Calculate reward based on imitation accuracy
-        expert_action, _ = self.expert_policy.output(np.array([self.lake_state], dtype=np.float32))
-        reward = float(-abs(learner_action - expert_action))
+        expert_action, _ = self.expert_policy.predict(
+            np.array([self.lake_state], dtype=np.float32).reshape(1,)
+        )
+        expert_action = float(expert_action)
 
-        # Update the lake state
+        reward = -abs(learner_action - expert_action)
+
         self.lake_state = next_lake_state
-
-        # Check if the environment should terminate
         self.year += 1
         terminated = self.year >= self.n_years
 
-        # Return 1D observation and 1D reward (scalar reward)
-        obs = np.array([self.lake_state], dtype=np.float32)
+        # Normalize observation to (1,)
+        obs = np.array([self.lake_state], dtype=np.float32).reshape(1,)
+        #print(f"DEBUG: step output obs={obs}, shape={obs.shape}, reward={reward}, terminated={terminated}")
+
         return obs, reward, terminated, False, {}
 
-    def reset(self, seed=None, options=None):
-        """Reset the environment to an initial state."""
-        super().reset(seed=seed)
 
-        # Reset environment variables
-        self.lake_state = 0.0  # Initial lake phosphorus concentration
+    def reset(self, seed=None, options=None):
+        super().reset(seed=seed)
+        self.lake_state = 0.0
         self.year = 0
 
-        # Return 1D observation
-        obs = np.array([self.lake_state], dtype=np.float32)
+        # Normalize observation to (1,)
+        obs = np.array([self.lake_state], dtype=np.float32).reshape(1,)
+        #print(f"DEBUG: reset output obs={obs}, shape={obs.shape}")
+
         return obs, {}

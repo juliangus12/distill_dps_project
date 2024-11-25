@@ -66,47 +66,49 @@ class CubicDPSLever(Lever):
             rbf["weight"] /= weight_sum  # Normalize weights to sum to 1
         return policy
 
-# In lake_model_utils.py
 class DPSExpertPolicy:
     def __init__(self, C, R, W, observation_space, action_space):
-        # Flatten RBF parameters into a single list
         self.vars = []
         for c, r, w in zip(C, R, W):
             self.vars.extend([c, r, w])
-
         self.observation_space = observation_space
         self.action_space = action_space
 
     def predict(self, obs, state=None, mask=None, deterministic=False):
         """
         Predict method compatible with Stable Baselines 3 policies.
-
-        Parameters:
-            obs (np.ndarray): Observations, could be a scalar or an array.
-            state: Not used, present for API compatibility.
-            mask: Not used, present for API compatibility.
-            deterministic (bool): Not used, present for API compatibility.
-
-        Returns:
-            tuple: Actions corresponding to the observations, and the state (None in this case).
         """
         # Ensure obs is a NumPy array
         obs = np.array(obs)
+        #print(f"DEBUG: DPSExpertPolicy.predict received obs={obs}, shape={obs.shape}, state={state}")
 
-        # Handle scalar and batch observations
-        if obs.ndim == 0:
-            # Single observation
+        # Handle edge cases for shapes
+        if obs.ndim == 2 and obs.shape[1] == 1:
+            obs = obs.flatten()  # Convert (N, 1) -> (N,)
+        elif obs.ndim == 1 and obs.shape == (1,):
+            obs = obs[0]  # Convert (1,) -> scalar
+
+        # Debugging corrected shape
+        #print(f"DEBUG: Corrected observation shape: {obs.shape}")
+
+        # Single observation: compute action
+        if obs.ndim == 0:  # Scalar case
             action = compute_policy_output(obs, self.vars)
-            return action, None  # Return None for the state
-        else:
-            # Batch of observations
+            #print(f"DEBUG: Single action computed: {action}")
+            return np.array([action]), None  # Return consistent array
+        elif obs.ndim == 1:  # Batch case
             actions = np.array([compute_policy_output(o, self.vars) for o in obs])
-            return actions, None  # Return None for the state
+            #print(f"DEBUG: Batch actions computed: {actions}")
+            return actions, None
+        else:
+            raise ValueError(f"Unexpected observation shape after correction: {obs.shape}")
 
-        
+
+
     def __call__(self, obs, state=None, mask=None):
         action, _ = self.predict(obs)
         return action
+
 
 def compute_policy_output(lake_state, vars):
     """
@@ -311,7 +313,6 @@ def generate_inflow_data(mean=inflow_mean, variance=inflow_variance, num_samples
         inflow_data.append(inflow)
 
     return inflow_data
-
 
 # Function to simulate lake dynamics with given policy
 def lake_model(policy, loss_rate=phosphorus_loss_rate, recycle_rate=phosphorus_recycling_rate,
